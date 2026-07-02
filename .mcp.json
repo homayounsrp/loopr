@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "loopr": {
+      "command": "backend/.venv/bin/python",
+      "args": ["backend/app/mcp_server.py"],
+      "env": {
+        "LOOPR_URL": "http://localhost:8000"
+      }
+    }
+  }
+}
