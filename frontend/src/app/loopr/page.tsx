@@ -321,7 +321,7 @@ const MonBlock: React.FC<{ title: string; hint: string; children: React.ReactNod
   </div>
 );
 
-const HistoryPanel: React.FC<{ history: IterationRecord[]; specs: { id: string; criterion: string }[] }> = ({ history, specs }) => {
+const HistoryPanel: React.FC<{ history: IterationRecord[] }> = ({ history }) => {
   if (history.length === 0) return <div style={monoHint}>No passes yet. Each grade adds a row and moves the trend line.</div>;
   const avgs = history.map((h) => h.avg);
   const last = history[history.length - 1];
@@ -331,32 +331,17 @@ const HistoryPanel: React.FC<{ history: IterationRecord[]; specs: { id: string; 
   const tc = delta > 0 ? "var(--good)" : delta < 0 ? "var(--bad)" : "var(--text-2)";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* top: avg-score summary on the left, per-criterion trend fills the right */}
-      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 16 }}>
-          <div style={{ width: 168 }}>
-            <div style={{ ...microLabel, marginBottom: 4 }}>avg score / pass</div>
-            <Sparkline values={avgs} w={168} h={40} />
-          </div>
-          <div style={{ fontSize: 12.5, paddingBottom: 2 }}>
-            <span className="dl-num" style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-.03em" }}>{last.avg}%</span>
-            <span className="dl-num" style={{ color: tc, fontWeight: 700, marginLeft: 6 }}>{trend}</span>
-            <div style={{ color: "var(--text-3)", marginTop: 2 }}>{history.length} pass{history.length > 1 ? "es" : ""}</div>
-          </div>
+      {/* avg-score summary */}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 16 }}>
+        <div style={{ width: 168 }}>
+          <div style={{ ...microLabel, marginBottom: 4 }}>avg score / pass</div>
+          <Sparkline values={avgs} w={168} h={40} />
         </div>
-        {specs.length > 0 && (
-          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
-            <div style={microLabel}>per-criterion trend</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 190px))", gap: 8, marginTop: 8 }}>
-              {specs.map((s) => (
-                <div key={s.id} style={miniTrend}>
-                  <div style={{ fontSize: 10.5, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 3 }}>{s.criterion}</div>
-                  <Sparkline values={history.map((h) => h.scores[s.id] ?? 0)} w={160} h={24} color="var(--cyan)" />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <div style={{ fontSize: 12.5, paddingBottom: 2 }}>
+          <span className="dl-num" style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-.03em" }}>{last.avg}%</span>
+          <span className="dl-num" style={{ color: tc, fontWeight: 700, marginLeft: 6 }}>{trend}</span>
+          <div style={{ color: "var(--text-3)", marginTop: 2 }}>{history.length} pass{history.length > 1 ? "es" : ""}</div>
+        </div>
       </div>
       {/* history table, full width */}
       <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--r-sm)" }}>
@@ -776,7 +761,7 @@ const Page: React.FC = () => {
               right={<ScheduleStrip schedule={snap.schedule} />}>
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <MonBlock title="Iteration history" hint="Is it converging? Each pass plots its average score.">
-                  <HistoryPanel history={snap.history} specs={snap.evalSpecs} />
+                  <HistoryPanel history={snap.history} />
                 </MonBlock>
                 <div style={monRow}>
                   <MonBlock title="Findings" hint="What the checker flagged to fix, and what’s done.">
@@ -934,7 +919,6 @@ const monRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "rep
 const monBlock: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: "var(--r)", padding: 16, background: "var(--surface-2)" };
 const monoHint: React.CSSProperties = { fontSize: 12, color: "var(--text-3)", lineHeight: 1.55, padding: "6px 2px" };
 const microLabel: React.CSSProperties = { fontSize: 10, color: "var(--text-3)", fontWeight: 650, textTransform: "uppercase", letterSpacing: ".07em" };
-const miniTrend: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: "var(--r-sm)", padding: "8px 10px", background: "var(--surface)" };
 
 const hTable: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 11.5 };
 const hTh: React.CSSProperties = { textAlign: "center", padding: "6px 8px", color: "var(--text-3)", fontWeight: 650, borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--surface)", textTransform: "uppercase", letterSpacing: ".05em", fontSize: 9.5 };
