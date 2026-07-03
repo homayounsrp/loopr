@@ -1,4 +1,4 @@
-# Secrets — never commit
+# Secrets, never commit
 .env
 .env.*
 !.env.example
@@ -13,6 +13,9 @@ venv/
 node_modules/
 .next/
 out/
+
+# Local design docs and scratch
+docs/
 
 # OS
 .DS_Store

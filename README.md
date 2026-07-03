@@ -15,6 +15,8 @@ If you would rather not drive it by hand, there is an autonomous mode
 (`LOOPR_MODE=api`) where the backend runs the maker and checker agents itself on
 an Anthropic API key.
 
+![The Loopr dashboard](assets/dashboard.png)
+
 ## What it feels like to use
 
 1. Open the dashboard and write your **loop goal**: what you want built or researched.
