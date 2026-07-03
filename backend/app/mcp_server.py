@@ -137,6 +137,29 @@ async def save_build(html: str, summary: str = "") -> dict:
 
 
 @mcp.tool()
+async def save_change(
+    summary: str, files: list[dict], branch: str = "", pr_url: str = ""
+) -> dict:
+    """MODE B (code mode) — when this build edits a REAL project on disk instead of
+    producing HTML, report what changed here so the artifact rail can show it.
+
+    Make the edits with your own file tools first, then call this.
+    - summary: one line describing the whole change.
+    - files: [{path, summary}] — one entry per touched file, `summary` a short,
+      high-level, plain-English note of what changed in that file (no diffs, no
+      line counts).
+    - branch / pr_url: pass ONLY if you actually pushed a branch or opened a PR;
+      leave empty otherwise. The UI shows the link only when set.
+
+    Returns the new build number. Grade it with save_scores as usual (command-kind
+    rubric criteria like `pytest` run against the real files)."""
+    return await _post(
+        "/api/change",
+        {"summary": summary, "files": files, "branch": branch, "prUrl": pr_url},
+    )
+
+
+@mcp.tool()
 async def save_scores(scores: list[dict]) -> dict:
     """MODE B — grade the rubric against the current build. `scores` is a list of
     {id, score (0-100), reason}, using the ids from get_workspace's rubric. Put on
@@ -159,6 +182,7 @@ async def emit_output(
     append: bool = True,
     done: bool = False,
     worktree: str = "",
+    tokens: int = -1,
 ) -> dict:
     """MODE B — stream your live working output to the dashboard so anyone watching
     sees it happen.
@@ -171,7 +195,9 @@ async def emit_output(
     `append=True` (default) adds `text` to that pane so you can stream in chunks;
     pass `append=False` to replace the pane's contents. Set `done=True` on the final
     chunk to mark that pane finished. `worktree` tags the pane with the branch the
-    subagent runs in (Component 2 isolation). Text renders as markdown."""
+    subagent runs in (Component 2 isolation). `tokens` sets this agent's cumulative
+    token usage so the dashboard can show a per-agent and total breakdown. Text
+    renders as markdown."""
     body = {
         "id": _slug(agent),
         "text": text,
@@ -182,6 +208,8 @@ async def emit_output(
     }
     if worktree:
         body["worktree"] = worktree
+    if tokens >= 0:
+        body["tokens"] = tokens
     return await _post("/api/output", body)
 
 

@@ -68,16 +68,18 @@ class EvalSpec(CamelModel):
     criterion: str  # the label/criterion text
     kind: str = "llm"  # "llm" | "command"
     command: str = ""  # for kind="command": what the checker runs
+    target: int = -1  # per-criterion pass threshold; -1 = inherit the global target
 
 
 class EvalResult(CamelModel):
     id: str
     label: str  # the criterion text
     score: int  # the grader's 0..100 score for how well this rubric is met
-    passed: bool  # score >= target_accuracy
+    passed: bool  # score >= the effective target
     detail: str  # the grader's reason
     kind: str = "llm"  # mirrors the spec's kind, so the UI can render it
     command: str = ""  # mirrors the spec's command (for kind="command")
+    target: int = 0  # the effective target this result was judged against
 
 
 class LogEntry(CamelModel):
@@ -115,6 +117,7 @@ class OutputStream(CamelModel):
     text: str  # accumulated output (markdown)
     at: float  # ms since engine start
     worktree: str = ""  # branch/worktree this agent runs in (Component 2 isolation)
+    tokens: int = 0  # cumulative tokens this agent has used
 
 
 class Finding(CamelModel):
@@ -150,6 +153,28 @@ class BuildRecord(CamelModel):
     summary: str = ""
     chars: int = 0
     html: str = ""
+    at: float = 0.0
+
+
+class ChangedFile(CamelModel):
+    """One file a code-mode build touched: the path plus a high-level, plain
+    English note on what changed in it. No line counts by design."""
+
+    path: str
+    summary: str = ""
+
+
+class CodeChange(CamelModel):
+    """A code-mode artifact. When a build edits a real project instead of
+    producing HTML, the orchestrator pushes this so the artifact rail can show
+    what changed. `branch` and `pr_url` are set only when the loop actually
+    pushed a branch or opened a PR, so the UI shows the link only if it exists."""
+
+    summary: str = ""  # one-line overview of the whole change
+    files: list[ChangedFile] = []
+    branch: str = ""  # "" = no branch pushed
+    pr_url: str = ""  # "" = no PR opened
+    build: int = 0
     at: float = 0.0
 
 
@@ -194,6 +219,8 @@ class Snapshot(CamelModel):
     max_loops: int  # the cap (only applied when max_loops_enabled)
     max_loops_enabled: bool  # off → iterate until every rubric hits the target
     target_accuracy: int  # desired per-rubric score (0..100) the loop iterates to
+    per_criterion_targets: bool = False  # if true, each criterion uses its own target
+    total_tokens: int = 0  # tokens used across all agents this loop
     halted: bool  # done (all rubrics at target) or hit the loop cap
 
     agents: list[AgentDef]  # the pipeline defined in the Agent Builder
@@ -217,6 +244,7 @@ class Snapshot(CamelModel):
     history: list[IterationRecord]  # append-only per-pass record (convergence)
     findings: list[Finding]  # structured evaluation findings (open/addressed)
     builds: list[BuildRecord]  # memory: produced artifacts, for diff & resume
+    code_change: CodeChange | None = None  # code-mode artifact (files changed), or null
     gate: Gate | None  # a pending human checkpoint, or null
     schedule: ScheduleInfo  # cadence, if scheduled
     plan: list[PlanStep]  # this round's decomposition (subtask → agent)

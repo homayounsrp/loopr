@@ -103,6 +103,10 @@ async def factory(ws: WebSocket) -> None:
                     await engine.set_target_accuracy(int(msg.get("value", 85)))
                 case "setGoal":
                     await engine.set_goal(str(msg.get("text", "")))
+                case "setPerCriterionTargets":
+                    await engine.set_per_criterion_targets(bool(msg.get("enabled", False)))
+                case "setCriterionTargets":
+                    await engine.set_criterion_targets(dict(msg.get("targets", {})))
                 case "setLocked":
                     await engine.set_locked(bool(msg.get("value", False)))
                 case "setAgents":
@@ -171,6 +175,18 @@ async def api_goal(payload: dict = Body(default={})) -> dict:
     return {"goal": engine.state.vision.brief}
 
 
+@app.post("/api/per_criterion_targets")
+async def api_per_criterion_targets(payload: dict = Body(default={})) -> dict:
+    await engine.set_per_criterion_targets(bool(payload.get("enabled", False)))
+    return {"perCriterionTargets": engine.state.per_criterion_targets}
+
+
+@app.post("/api/criterion_targets")
+async def api_criterion_targets(payload: dict = Body(default={})) -> dict:
+    await engine.set_criterion_targets(dict(payload.get("targets", {})))
+    return {"ok": True}
+
+
 @app.post("/api/locked")
 async def api_locked(payload: dict = Body(default={})) -> dict:
     await engine.set_locked(bool(payload.get("value", True)))
@@ -214,6 +230,18 @@ async def api_build(payload: dict = Body(default={})) -> dict:
     return await engine.save_build(str(content), str(payload.get("summary", "")))
 
 
+@app.post("/api/change")
+async def api_change(payload: dict = Body(default={})) -> dict:
+    """Code-mode build: files changed in a real project, with per-file notes and
+    an optional pushed branch / PR link."""
+    return await engine.save_change(
+        str(payload.get("summary", "")),
+        list(payload.get("files", [])),
+        str(payload.get("branch", "")),
+        str(payload.get("prUrl", payload.get("pr_url", ""))),
+    )
+
+
 @app.post("/api/scores")
 async def api_scores(payload: dict = Body(default={})) -> dict:
     return await engine.save_scores(list(payload.get("scores", [])))
@@ -235,6 +263,7 @@ async def api_output(payload: dict = Body(default={})) -> dict:
         append=bool(payload.get("append", True)),
         status=str(payload.get("status", "streaming")),
         worktree=(str(payload["worktree"]) if payload.get("worktree") is not None else None),
+        tokens=int(payload.get("tokens", -1)),
     )
 
 

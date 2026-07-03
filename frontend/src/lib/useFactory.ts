@@ -57,7 +57,7 @@ export function useFactory() {
     ),
     reset: useCallback(() => send({ type: "reset" }), [send]),
     setEvals: useCallback(
-      (evals: { id?: string; criterion: string; kind?: "llm" | "command"; command?: string }[]) =>
+      (evals: { id?: string; criterion: string; kind?: "llm" | "command"; command?: string; target?: number }[]) =>
         send({ type: "setEvals", evals }),
       [send],
     ),
@@ -70,6 +70,8 @@ export function useFactory() {
       [send],
     ),
     setGoal: useCallback((text: string) => send({ type: "setGoal", text }), [send]),
+    setPerCriterionTargets: useCallback((enabled: boolean) => send({ type: "setPerCriterionTargets", enabled }), [send]),
+    setCriterionTargets: useCallback((targets: Record<string, number>) => send({ type: "setCriterionTargets", targets }), [send]),
     setAgents: useCallback(
       (agents: { id?: string; name: string; kind: string; role: string; model: string }[]) =>
         send({ type: "setAgents", agents }),

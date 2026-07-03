@@ -16,7 +16,9 @@ import uuid
 from .domain.models import (
     AgentDef,
     BuildRecord,
+    ChangedFile,
     ChatMessage,
+    CodeChange,
     EvalResult,
     EvalSpec,
     Finding,
@@ -98,6 +100,7 @@ class FactoryState:
         self.max_loops: int = DEFAULT_MAX_LOOPS
         self.max_loops_enabled: bool = True
         self.target_accuracy: int = DEFAULT_TARGET
+        self.per_criterion_targets: bool = False  # each criterion uses its own target
         self.agents: list[AgentDef] = _default_agents()
         self.mode: str = MODE
         self.schedule: ScheduleInfo = ScheduleInfo()  # cadence — config, survives reset
@@ -111,6 +114,7 @@ class FactoryState:
 
         # -- the agents' work (cleared by reset) ------------------------------
         self.html: str = ""
+        self.code_change: CodeChange | None = None  # code-mode artifact, if any
         self.build: int = 0
         self.loop_count: int = 0
         self.halted: bool = False
@@ -141,18 +145,28 @@ class FactoryState:
 
     # -- helpers --------------------------------------------------------------
 
+    def _effective_target(self, spec: EvalSpec) -> int:
+        """The pass threshold for one criterion: its own target when per-criterion
+        mode is on and it has one set, otherwise the global target."""
+        if self.per_criterion_targets and spec.target >= 0:
+            return spec.target
+        return self.target_accuracy
+
     def _pending_results(self, detail: str = "not built yet") -> list[EvalResult]:
         return [
             EvalResult(id=s.id, label=s.criterion, score=0, passed=False, detail=detail,
-                       kind=s.kind, command=s.command)
+                       kind=s.kind, command=s.command, target=self._effective_target(s))
             for s in self.eval_specs
         ]
 
     def _recompute_verdict(self) -> None:
-        """Re-derive passed / was_green / health from scores vs the target."""
+        """Re-derive passed / was_green / health from scores vs each target."""
         results = self.eval_results
+        spec_by_id = {s.id: s for s in self.eval_specs}
         for r in results:
-            r.passed = r.score >= self.target_accuracy
+            spec = spec_by_id.get(r.id)
+            r.target = self._effective_target(spec) if spec else self.target_accuracy
+            r.passed = r.score >= r.target
         if results:
             self.was_green = all(r.passed for r in results)
             self.health = sum(r.score for r in results) / (100 * len(results))
@@ -178,7 +192,12 @@ class FactoryState:
                 kind = "llm"
             if kind == "command" and not crit:
                 crit = command  # fall back to showing the command as the label
-            specs.append(EvalSpec(id=str(it.get("id") or _eid()), criterion=crit, kind=kind, command=command))
+            try:
+                target = int(it.get("target", -1))
+            except (TypeError, ValueError):
+                target = -1
+            target = -1 if target < 0 else max(0, min(100, target))
+            specs.append(EvalSpec(id=str(it.get("id") or _eid()), criterion=crit, kind=kind, command=command, target=target))
         self.eval_specs = specs
         self.eval_results = self._pending_results("criteria changed — re-checking")
         self._reopen(f"criteria updated ({len(specs)})")
@@ -199,6 +218,30 @@ class FactoryState:
         elif not self.max_loops_enabled or self.loop_count < self.max_loops:
             self.halted = False  # target now unmet → keep iterating
         self.log("system", f"target accuracy → {self.target_accuracy}%", Tone.steer)
+
+    def _resettle_after_target_change(self) -> None:
+        """Same scores, new thresholds → re-derive done-ness and keep/stop the loop."""
+        self._recompute_verdict()
+        if self.was_green:
+            self.halted = True
+        elif not self.max_loops_enabled or self.loop_count < self.max_loops:
+            self.halted = False
+
+    def set_per_criterion_targets(self, enabled: bool) -> None:
+        self.per_criterion_targets = bool(enabled)
+        self._resettle_after_target_change()
+        self.log("system", f"per-criterion targets {'on' if enabled else 'off'}", Tone.steer)
+
+    def set_criterion_targets(self, targets: dict) -> None:
+        """Set individual criterion thresholds in place (does not reset scores)."""
+        for s in self.eval_specs:
+            if s.id in targets:
+                try:
+                    v = int(targets[s.id])
+                except (TypeError, ValueError):
+                    continue
+                s.target = -1 if v < 0 else max(0, min(100, v))
+        self._resettle_after_target_change()
 
     def maker_count(self) -> int:
         return sum(1 for a in self.agents if a.kind == "maker")
@@ -272,11 +315,13 @@ class FactoryState:
         append: bool = True,
         status: str = "streaming",
         worktree: str | None = None,
+        tokens: int = -1,
     ) -> None:
         """Upsert an output pane by id. `role` is 'orchestrator' (the driver's own
         output) or 'subagent' (one pane per spawned subagent). Appends by default so
         the orchestrator can stream chunks; pass append=False to replace. `worktree`
-        tags the pane with the branch/checkout the agent runs in (Component 2)."""
+        tags the pane with the branch/checkout the agent runs in (Component 2).
+        `tokens` (>= 0) sets that agent's cumulative token usage."""
         sid = str(id).strip() or "main"
         role = role if role in ("orchestrator", "subagent") else "subagent"
         status = status if status in ("streaming", "done") else "streaming"
@@ -289,6 +334,8 @@ class FactoryState:
                 o.status = status
                 if worktree is not None:
                     o.worktree = str(worktree)
+                if tokens >= 0:
+                    o.tokens = int(tokens)
                 o.at = self._at()
                 return
         self.outputs.append(
@@ -299,6 +346,7 @@ class FactoryState:
                 status=status,
                 text=str(text)[-MAX_OUTPUT_CHARS:],
                 worktree=str(worktree or ""),
+                tokens=max(0, int(tokens)),
                 at=self._at(),
             )
         )
@@ -487,6 +535,7 @@ class FactoryState:
 
     def reset_work(self) -> None:
         self.html = ""
+        self.code_change = None
         self.build = 0
         self.loop_count = 0
         self.halted = False
@@ -512,6 +561,21 @@ class FactoryState:
     def set_html(self, html: str) -> None:
         self.build += 1
         self.html = html
+
+    def set_code_change(self, summary: str, files: list[dict], branch: str, pr_url: str) -> None:
+        """Record a code-mode artifact: what this build changed in a real project."""
+        self.build += 1
+        self.code_change = CodeChange(
+            summary=str(summary),
+            files=[
+                ChangedFile(path=str(f.get("path", "")).strip(), summary=str(f.get("summary", "")).strip())
+                for f in files if str(f.get("path", "")).strip()
+            ],
+            branch=str(branch or "").strip(),
+            pr_url=str(pr_url or "").strip(),
+            build=self.build,
+            at=self._at(),
+        )
 
     def apply_results(self, results: list[EvalResult]) -> None:
         """Adopt the grader's scored results; derive passed/was_green vs target."""
@@ -575,6 +639,8 @@ class FactoryState:
             max_loops=self.max_loops,
             max_loops_enabled=self.max_loops_enabled,
             target_accuracy=self.target_accuracy,
+            per_criterion_targets=self.per_criterion_targets,
+            total_tokens=sum(o.tokens for o in self.outputs),
             halted=self.halted,
             agents=self.agents,
             vision=self.vision,
@@ -591,6 +657,7 @@ class FactoryState:
             history=self.history,
             findings=self.findings,
             builds=self.builds,
+            code_change=self.code_change,
             gate=self.gate,
             schedule=self.schedule,
             plan=self.plan,

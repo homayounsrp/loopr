@@ -25,16 +25,18 @@ export interface EvalSpec {
   criterion: string;
   kind?: CheckKind; // "llm" (default) = LLM-judged; "command" = a test/command check
   command?: string; // for kind="command": what the checker runs
+  target?: number; // per-criterion pass threshold; -1 = inherit the global target
 }
 
 export interface EvalResult {
   id: string;
   label: string;
   score: number; // 0..100 grader score
-  passed: boolean; // score >= targetAccuracy
+  passed: boolean; // score >= the effective target
   detail: string;
   kind?: CheckKind;
   command?: string;
+  target?: number; // the effective target this result was judged against
 }
 
 export interface LogEntry {
@@ -61,6 +63,7 @@ export interface OutputStream {
   text: string;
   at: number;
   worktree: string;
+  tokens: number;
 }
 
 export type LoopStatus =
@@ -97,6 +100,20 @@ export interface BuildRecord {
   at: number;
 }
 
+export interface ChangedFile {
+  path: string;
+  summary: string;
+}
+
+export interface CodeChange {
+  summary: string;
+  files: ChangedFile[];
+  branch: string;
+  prUrl: string;
+  build: number;
+  at: number;
+}
+
 export interface Gate {
   id: string;
   action: string;
@@ -127,6 +144,8 @@ export interface Snapshot {
   maxLoops: number;
   maxLoopsEnabled: boolean;
   targetAccuracy: number;
+  perCriterionTargets: boolean;
+  totalTokens: number;
   halted: boolean;
 
   agents: AgentDef[];
@@ -149,6 +168,7 @@ export interface Snapshot {
   history: IterationRecord[];
   findings: Finding[];
   builds: BuildRecord[];
+  codeChange: CodeChange | null;
   gate: Gate | null;
   schedule: ScheduleInfo;
   plan: PlanStep[];
@@ -161,9 +181,11 @@ export type Command =
   | { type: "setSpeed"; value: number }
   | { type: "chat"; text: string; files: { name: string; content: string }[] }
   | { type: "reset" }
-  | { type: "setEvals"; evals: { id?: string; criterion: string; kind?: CheckKind; command?: string }[] }
+  | { type: "setEvals"; evals: { id?: string; criterion: string; kind?: CheckKind; command?: string; target?: number }[] }
   | { type: "setMaxLoops"; value: number; enabled: boolean }
   | { type: "setTargetAccuracy"; value: number }
+  | { type: "setPerCriterionTargets"; enabled: boolean }
+  | { type: "setCriterionTargets"; targets: Record<string, number> }
   | { type: "setGoal"; text: string }
   | {
       type: "setAgents";

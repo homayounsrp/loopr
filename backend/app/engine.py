@@ -87,6 +87,21 @@ class LooprEngine:
         await self.emit_current()
         return {"build": self.state.build}
 
+    async def save_change(
+        self, summary: str, files: list[dict], branch: str = "", pr_url: str = ""
+    ) -> dict:
+        """Code-mode build: record what this pass changed in a real project
+        (per-file high-level notes, plus an optional pushed branch / PR link)."""
+        self.state.set_code_change(summary, list(files), branch, pr_url)
+        self.state.loop_count += 1
+        self.state.running = True
+        self.state.halted = False
+        note = str(summary).strip() or f"Changed {len(files)} file(s) (build #{self.state.build})."
+        self.state.add_builder_message(note)
+        self.state.record_build(note)  # memory: keep the change summary per build
+        await self.emit_current()
+        return {"build": self.state.build}
+
     async def save_scores(self, scores: list[dict]) -> dict:
         self.state.apply_scores(list(scores))
         self.state.record_iteration()  # append this pass to the history spine
@@ -118,9 +133,10 @@ class LooprEngine:
         append: bool = True,
         status: str = "streaming",
         worktree: str | None = None,
+        tokens: int = -1,
     ) -> dict:
         self.state.push_output(
-            id, text, label=label, role=role, append=append, status=status, worktree=worktree
+            id, text, label=label, role=role, append=append, status=status, worktree=worktree, tokens=tokens
         )
         await self.emit_current()
         return {"ok": True, "id": id}
@@ -178,6 +194,14 @@ class LooprEngine:
 
     async def set_target_accuracy(self, v: int) -> None:
         self.state.set_target_accuracy(v)
+        await self.emit_current()
+
+    async def set_per_criterion_targets(self, enabled: bool) -> None:
+        self.state.set_per_criterion_targets(bool(enabled))
+        await self.emit_current()
+
+    async def set_criterion_targets(self, targets: dict) -> None:
+        self.state.set_criterion_targets(dict(targets))
         await self.emit_current()
 
     async def set_goal(self, text: str) -> None:

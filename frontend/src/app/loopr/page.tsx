@@ -5,10 +5,10 @@
 // `loopr` MCP tools. You set the rubric, target and cap; the loop iterates an
 // artifact until every criterion clears the bar, and every step streams here live.
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useFactory } from "../../lib/useFactory";
 import type {
-  BuildRecord, EvalResult, Finding, Gate, IterationRecord,
+  BuildRecord, CodeChange, Finding, Gate, IterationRecord,
   OutputStream, PlanStep, ScheduleInfo, Snapshot,
 } from "../../lib/types";
 
@@ -131,45 +131,6 @@ const Stat: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactN
   </div>
 );
 
-/* ── sparkline ────────────────────────────────────────────────────── */
-
-const Sparkline: React.FC<{ values: number[]; w?: number; h?: number; color?: string }> = ({
-  values, w = 128, h = 30, color = "var(--accent)",
-}) => {
-  if (values.length === 0) return <span style={{ color: "var(--text-3)", fontSize: 11 }}>no data</span>;
-  const pts = values.length === 1 ? [values[0], values[0]] : values;
-  // Inset the plot so the line, end-dot, and its glow stay fully inside the box
-  // (they used to sit flush at the edge and bleed past the card border).
-  const mx = 8, my = 7;
-  const step = (w - 2 * mx) / (pts.length - 1);
-  const px = (i: number) => mx + i * step;
-  // Auto-scale the y-axis to the data (with padding) so a flat, all-high line
-  // sits centered instead of pinned to the top with a big dead area-fill below.
-  const lo = Math.min(...pts), hi = Math.max(...pts);
-  const pad = Math.max(6, (hi - lo) * 0.4);
-  const dmin = lo - pad, dmax = hi + pad;
-  const y = (v: number) => (h - my) - ((v - dmin) / (dmax - dmin)) * (h - 2 * my);
-  const line = pts.map((v, i) => `${i === 0 ? "M" : "L"}${px(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const area = `${line} L${px(pts.length - 1).toFixed(1)},${h} L${mx},${h} Z`;
-  const last = pts[pts.length - 1];
-  const gid = `spk-${Math.round(pts.reduce((a, b) => a + b, 0))}-${pts.length}`;
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" width="100%" height={h} style={{ display: "block", overflow: "hidden", maxWidth: "100%" }}>
-      <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity={0.28} />
-          <stop offset="100%" stopColor={color} stopOpacity={0} />
-        </linearGradient>
-      </defs>
-      <path d={area} fill={`url(#${gid})`} />
-      {/* soft glow under the line */}
-      <path d={line} fill="none" stroke={color} strokeWidth={5} opacity={0.35} strokeLinejoin="round" strokeLinecap="round" style={{ filter: "blur(4px)" }} />
-      <path className="dl-draw" d={line} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" pathLength={1} vectorEffect="non-scaling-stroke" />
-      <circle cx={px(pts.length - 1)} cy={y(last)} r={3.2} fill={color} vectorEffect="non-scaling-stroke" style={{ filter: `drop-shadow(0 0 3px ${color})` }} />
-    </svg>
-  );
-};
-
 /* ── artifact preview ─────────────────────────────────────────────── */
 
 const PreviewFrame: React.FC<{ children: React.ReactNode; fill?: boolean }> = ({ children, fill }) => (
@@ -184,7 +145,7 @@ const PreviewFrame: React.FC<{ children: React.ReactNode; fill?: boolean }> = ({
   </div>
 );
 
-const Preview: React.FC<{ html: string; fill?: boolean }> = ({ html, fill }) => {
+const Preview: React.FC<{ html: string; fill?: boolean; theme?: "light" | "dark" }> = ({ html, fill, theme = "dark" }) => {
   const h = html.trim();
   if (!h) {
     return (
@@ -197,14 +158,55 @@ const Preview: React.FC<{ html: string; fill?: boolean }> = ({ html, fill }) => 
       </PreviewFrame>
     );
   }
-  const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0}body{font-family:Inter,system-ui,sans-serif;color:#111;padding:12px 14px}</style></head><body>${h}</body></html>`;
+  // Match the preview surface to the dashboard theme so it doesn't flash white in
+  // dark mode. `color-scheme` also themes default form controls/scrollbars.
+  const bg = theme === "dark" ? "#0f1117" : "#ffffff";
+  const fg = theme === "dark" ? "#e7e7ee" : "#111111";
+  const link = theme === "dark" ? "#8ab4ff" : "#2563eb";
+  const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><style>:root{color-scheme:${theme}}*{box-sizing:border-box}html,body{margin:0}body{font-family:Inter,system-ui,sans-serif;background:${bg};color:${fg};padding:12px 14px}a{color:${link}}</style></head><body>${h}</body></html>`;
   return (
     <PreviewFrame fill={fill}>
       <iframe title="Artifact preview" sandbox="allow-same-origin" srcDoc={srcDoc}
-        style={{ width: "100%", height: fill ? "100%" : 288, flex: fill ? 1 : undefined, border: "none", background: "#fff", display: "block" }} />
+        style={{ width: "100%", height: fill ? "100%" : 288, flex: fill ? 1 : undefined, border: "none", background: bg, display: "block" }} />
     </PreviewFrame>
   );
 };
+
+// Code-mode artifact: what a build changed in a real project. Shows a summary,
+// an optional branch / PR link (only when the loop pushed one), and a list of
+// touched files each with a high-level note. Rendered instead of the iframe.
+const CodeArtifact: React.FC<{ change: CodeChange; fill?: boolean }> = ({ change, fill }) => (
+  <div style={fill ? { ...previewFrame, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : previewFrame}>
+    <div style={previewBar}>
+      <span style={{ ...dot, background: "#f6716f" }} />
+      <span style={{ ...dot, background: "#f3bf4d" }} />
+      <span style={{ ...dot, background: "#3ddc91" }} />
+      <span style={{ marginLeft: 8, fontSize: 10.5, color: "var(--text-3)", fontWeight: 600, letterSpacing: ".03em" }}>code changes</span>
+      {change.files.length > 0 && (
+        <span className="dl-num" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}>{change.files.length} file{change.files.length > 1 ? "s" : ""}</span>
+      )}
+    </div>
+    <div style={{ flex: fill ? 1 : undefined, minHeight: 0, overflowY: "auto", padding: 14, background: "var(--surface-2)", display: "flex", flexDirection: "column", gap: 12 }}>
+      {change.summary && <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.5 }}>{change.summary}</div>}
+      {(change.branch || change.prUrl) && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {change.prUrl && <a className="dl-link" href={change.prUrl} target="_blank" rel="noreferrer" style={prChip}>⧉ View PR</a>}
+          {change.branch && <span className="dl-num" style={branchChip} title="pushed branch">⑂ {change.branch}</span>}
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {change.files.length === 0 ? (
+          <div style={monoHint}>No files reported for this build.</div>
+        ) : change.files.map((f, i) => (
+          <div key={i} style={{ border: "1px solid var(--border)", borderRadius: "var(--r-sm)", padding: "9px 11px", background: "var(--surface)" }}>
+            <div className="dl-num" style={{ fontSize: 12, fontWeight: 650, color: "var(--accent-ink)", wordBreak: "break-all", fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>{f.path}</div>
+            {f.summary && <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 3, lineHeight: 1.45 }}>{f.summary}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
 
 /* ── markdown ─────────────────────────────────────────────────────── */
 
@@ -260,33 +262,97 @@ const Critique: React.FC<{ notes: string }> = ({ notes }) => {
 
 /* ── live output pane ─────────────────────────────────────────────── */
 
-const OutputPane: React.FC<{ stream: OutputStream; primary?: boolean }> = ({ stream, primary }) => {
-  const streaming = stream.status === "streaming";
-  const isOrch = stream.role === "orchestrator";
+type NodeState = "streaming" | "done" | "pending";
+
+// Compact token count: 940, 18.3k, 1.2M.
+const fmtTokens = (n: number): string =>
+  n < 1000 ? `${n}` : n < 1_000_000 ? `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k` : `${(n / 1_000_000).toFixed(1)}M`;
+
+// One box in the agent graph: streams the agent's live output, like the old
+// Live-output pane but compact so nodes can be wired together.
+const AgentNode: React.FC<{
+  label: string; role: "orchestrator" | "subagent"; state: NodeState;
+  subtask?: string; worktree?: string; text: string; tokens?: number;
+}> = ({ label, role, state, subtask, worktree, text, tokens }) => {
+  const isOrch = role === "orchestrator";
   const accent = isOrch ? "var(--accent)" : "var(--cyan)";
+  const stateLabel = state === "streaming" ? "streaming…" : state === "done" ? "done ✓" : "queued";
+  const stateColor = state === "streaming" ? accent : state === "done" ? "var(--good-ink)" : "var(--text-3)";
+  const hasMeta = !!worktree || (tokens ?? 0) > 0;
   return (
-    <div className="dl-card dl-pop" style={{ ...outputPane, borderColor: primary ? "rgba(123,107,255,.42)" : "rgba(67,198,240,.36)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <span style={{ ...streamDot, background: accent, animation: streaming ? "dl-pulse 1.15s ease-in-out infinite" : "none" }} />
-        <span style={{ fontSize: 12.5, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stream.label}</span>
-        <span style={{ fontSize: 11, fontWeight: 650, color: streaming ? accent : "var(--good-ink)", whiteSpace: "nowrap", flexShrink: 0 }}>
-          {streaming ? "streaming…" : "done ✓"}
-        </span>
+    <div className="dl-card dl-pop" style={{
+      border: `1px solid ${isOrch ? "rgba(123,107,255,.42)" : "rgba(67,198,240,.34)"}`,
+      borderRadius: "var(--r)", background: "var(--surface)", backgroundImage: "var(--sheen)",
+      padding: 11, boxShadow: "var(--sh-sm)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: (subtask || hasMeta) ? 6 : 7 }}>
+        <span style={{ ...streamDot, background: accent, animation: state === "streaming" ? "dl-pulse 1.15s ease-in-out infinite" : "none" }} />
+        <span style={{ fontSize: 12.5, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 650, color: stateColor, flexShrink: 0 }}>{stateLabel}</span>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 11 }}>
-        <Pill color={accent} bg={isOrch ? "var(--accent-weak)" : "var(--cyan-weak)"}>{isOrch ? "orchestrator" : "subagent"}</Pill>
-        {stream.worktree && <span style={{ ...worktreeTag, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title="isolated worktree or branch">⑂ {stream.worktree}</span>}
+      {subtask && <div style={{ fontSize: 11, color: "var(--text-3)", margin: "0 0 8px", lineHeight: 1.4 }}>{subtask}</div>}
+      {hasMeta && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {worktree && <span style={{ ...worktreeTag, display: "inline-block", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title="isolated worktree or branch">⑂ {worktree}</span>}
+          {(tokens ?? 0) > 0 && <span className="dl-num" style={{ fontSize: 10.5, fontWeight: 650, color: "var(--text-3)" }} title="tokens used by this agent">◆ {fmtTokens(tokens!)} tok</span>}
+        </div>
+      )}
+      <div style={{ ...outputBody, maxHeight: isOrch ? 240 : 180 }}>
+        {text.trim() ? <Markdown text={text} /> : <span style={{ color: "var(--text-3)", fontSize: 12 }}>{state === "pending" ? "not started yet" : "waiting…"}</span>}
       </div>
-      <div style={{ ...outputBody, maxHeight: primary ? 360 : 260 }}>
-        {stream.text.trim() ? <Markdown text={stream.text} /> : <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>waiting…</span>}
+    </div>
+  );
+};
+
+// The live stream as a graph: the orchestrator up top, wired down to each
+// subagent. Edges follow the decomposition plan (subtask → agent); with no plan
+// yet it falls back to whatever subagents are streaming.
+const AgentGraph: React.FC<{ outputs: OutputStream[]; plan: PlanStep[] }> = ({ outputs, plan }) => {
+  const orch = outputs.find((o) => o.role === "orchestrator");
+  const subs = outputs.filter((o) => o.role === "subagent");
+  const streamState = (s: OutputStream): NodeState => (s.status === "done" ? "done" : "streaming");
+  const byLabel = (name: string) => subs.find((s) => s.label.trim().toLowerCase() === name.trim().toLowerCase());
+
+  const children = plan.length > 0
+    ? plan.map((p, i) => {
+        const o = byLabel(p.agent);
+        return { key: `${p.agent}-${i}`, label: p.agent || `Agent ${i + 1}`, subtask: p.subtask,
+          worktree: p.worktree || o?.worktree || "", state: (o ? streamState(o) : "pending") as NodeState, text: o?.text ?? "", tokens: o?.tokens ?? 0 };
+      })
+    : subs.map((s) => ({ key: s.id, label: s.label, subtask: "", worktree: s.worktree, state: streamState(s), text: s.text, tokens: s.tokens }));
+
+  if (!orch && children.length === 0) {
+    return (
+      <div style={outputEmpty}>
+        <div style={{ fontSize: 24, marginBottom: 8 }}>◍</div>
+        <div style={{ fontWeight: 650, color: "var(--text-2)" }}>Waiting for the orchestrator</div>
+        <div style={{ marginTop: 5, fontSize: 12.5, color: "var(--text-3)" }}>
+          Drive this with the <code style={inlineCode}>loopr</code> tools. The orchestrator and each subagent it spawns appear here, wired by the plan.
+        </div>
       </div>
+    );
+  }
+  return (
+    <div>
+      <AgentNode label={orch?.label ?? "Orchestrator"} role="orchestrator"
+        state={orch ? streamState(orch) : "pending"} text={orch?.text ?? ""} tokens={orch?.tokens ?? 0} />
+      {children.length > 0 && (
+        <div style={{ marginLeft: 13, borderLeft: "2px solid var(--border-2)", paddingLeft: 16, paddingTop: 6, marginTop: 4, display: "flex", flexDirection: "column", gap: 12 }}>
+          {children.map((c) => (
+            <div key={c.key} style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: -16, top: 18, width: 14, height: 2, background: "var(--border-2)" }} />
+              <AgentNode label={c.label} role="subagent" state={c.state} subtask={c.subtask} worktree={c.worktree} text={c.text} tokens={c.tokens} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
 
 /* ── loop-monitor sub-panels ──────────────────────────────────────── */
 
-type RubricRow = { id?: string; criterion: string; kind?: "llm" | "command"; command?: string; fileName?: string };
+type RubricRow = { id?: string; criterion: string; kind?: "llm" | "command"; command?: string; fileName?: string; target?: number };
 
 function lineDiff(prev: string, next: string): { added: number; removed: number } {
   const a = new Set(prev.split("\n").map((l) => l.trim()).filter(Boolean));
@@ -311,17 +377,59 @@ const GateBanner: React.FC<{ gate: Gate; onResolve: (approve: boolean) => void }
   </div>
 );
 
-const MonBlock: React.FC<{ title: string; hint: string; children: React.ReactNode }> = ({ title, hint, children }) => (
+const MonBlock: React.FC<{ title: string; hint: string; icon?: string; children: React.ReactNode }> = ({ title, hint, icon, children }) => (
   <div style={monBlock}>
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 12.5, fontWeight: 700 }}>{title}</div>
-      <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{hint}</div>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 11, marginBottom: 15, paddingBottom: 14, borderBottom: "1px solid var(--border)" }}>
+      {icon && <span style={monIcon}>{icon}</span>}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 750, letterSpacing: "-.01em" }}>{title}</div>
+        <div style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 3, lineHeight: 1.45 }}>{hint}</div>
+      </div>
     </div>
     {children}
   </div>
 );
 
+// Full-width avg-score chart. `hover` is the history index of the highlighted
+// pass (null = none); it draws a guide line + emphasised dot there.
+const AvgChart: React.FC<{ values: number[]; hover: number | null; h?: number }> = ({ values, hover, h = 60 }) => {
+  const W = 640;
+  const pts = values.length === 1 ? [values[0], values[0]] : values;
+  const n = pts.length;
+  const mx = 6, my = 9;
+  const step = (W - 2 * mx) / (n - 1);
+  const px = (i: number) => mx + i * step;
+  const lo = Math.min(...pts), hi = Math.max(...pts);
+  const pad = Math.max(6, (hi - lo) * 0.4);
+  const dmin = lo - pad, dmax = hi + pad;
+  const y = (v: number) => (h - my) - ((v - dmin) / (dmax - dmin)) * (h - 2 * my);
+  const line = pts.map((v, i) => `${i === 0 ? "M" : "L"}${px(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const area = `${line} L${px(n - 1).toFixed(1)},${h} L${mx},${h} Z`;
+  const hIdx = hover === null ? null : (values.length === 1 ? 1 : hover);
+  return (
+    <svg viewBox={`0 0 ${W} ${h}`} preserveAspectRatio="none" width="100%" height={h} style={{ display: "block", overflow: "visible" }}>
+      <defs>
+        <linearGradient id="avgspk" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.28} />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#avgspk)" />
+      <path d={line} fill="none" stroke="var(--accent)" strokeWidth={5} opacity={0.32} strokeLinejoin="round" strokeLinecap="round" style={{ filter: "blur(4px)" }} />
+      <path d={line} fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <circle cx={px(n - 1)} cy={y(pts[n - 1])} r={3.2} fill="var(--accent)" vectorEffect="non-scaling-stroke" />
+      {hIdx !== null && (
+        <>
+          <line x1={px(hIdx)} x2={px(hIdx)} y1={0} y2={h} stroke="var(--accent)" strokeWidth={1} opacity={0.4} vectorEffect="non-scaling-stroke" />
+          <circle cx={px(hIdx)} cy={y(pts[hIdx])} r={5} fill="var(--accent)" stroke="var(--surface-2)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+        </>
+      )}
+    </svg>
+  );
+};
+
 const HistoryPanel: React.FC<{ history: IterationRecord[] }> = ({ history }) => {
+  const [hover, setHover] = useState<number | null>(null);
   if (history.length === 0) return <div style={monoHint}>No passes yet. Each grade adds a row and moves the trend line.</div>;
   const avgs = history.map((h) => h.avg);
   const last = history[history.length - 1];
@@ -331,34 +439,46 @@ const HistoryPanel: React.FC<{ history: IterationRecord[] }> = ({ history }) => 
   const tc = delta > 0 ? "var(--good)" : delta < 0 ? "var(--bad)" : "var(--text-2)";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* avg-score summary */}
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 16 }}>
-        <div style={{ width: 168 }}>
-          <div style={{ ...microLabel, marginBottom: 4 }}>avg score / pass</div>
-          <Sparkline values={avgs} w={168} h={40} />
+      {/* avg-score summary + full-width chart */}
+      <div>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={microLabel}>avg score / pass</div>
+          <div style={{ fontSize: 12.5, textAlign: "right" }}>
+            <span className="dl-num" style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-.03em" }}>{(hover !== null ? history[hover]?.avg : last.avg)}%</span>
+            <span className="dl-num" style={{ color: tc, fontWeight: 700, marginLeft: 6 }}>{hover !== null ? `pass ${history[hover]?.iteration}` : trend}</span>
+          </div>
         </div>
-        <div style={{ fontSize: 12.5, paddingBottom: 2 }}>
-          <span className="dl-num" style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-.03em" }}>{last.avg}%</span>
-          <span className="dl-num" style={{ color: tc, fontWeight: 700, marginLeft: 6 }}>{trend}</span>
-          <div style={{ color: "var(--text-3)", marginTop: 2 }}>{history.length} pass{history.length > 1 ? "es" : ""}</div>
+        <div style={{ position: "relative" }} onMouseLeave={() => setHover(null)}>
+          <AvgChart values={avgs} hover={hover} />
+          {/* invisible hit columns, one per pass, to drive the hover */}
+          <div style={{ position: "absolute", inset: 0, display: "flex" }}>
+            {history.map((_, i) => (
+              <div key={i} style={{ flex: 1, cursor: "pointer" }} onMouseEnter={() => setHover(i)} />
+            ))}
+          </div>
         </div>
       </div>
-      {/* history table, full width */}
+      {/* history table, full width; rows highlight in sync with the chart hover */}
       <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--r-sm)" }}>
         <table style={hTable}>
           <thead><tr>
             <th style={hTh}>#</th><th style={hTh}>build</th><th style={hTh}>avg</th><th style={hTh}>open</th><th style={{ ...hTh, textAlign: "left" }}>summary</th>
           </tr></thead>
           <tbody>
-            {history.slice().reverse().map((h, i) => (
-              <tr key={i} className="dl-row">
-                <td className="dl-num" style={hTd}>{h.iteration}</td>
-                <td className="dl-num" style={hTd}>#{h.build}</td>
-                <td className="dl-num" style={{ ...hTd, fontWeight: 700, color: h.avg >= 85 ? "var(--good-ink)" : "var(--warn-ink)" }}>{h.avg}%</td>
-                <td className="dl-num" style={hTd}>{h.findings}</td>
-                <td style={{ ...hTd, textAlign: "left", color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 0, width: "100%" }}>{h.summary || "·"}</td>
-              </tr>
-            ))}
+            {history.slice().reverse().map((h, i) => {
+              const idx = history.length - 1 - i;
+              const on = hover === idx;
+              return (
+                <tr key={i} className="dl-row" onMouseEnter={() => setHover(idx)} onMouseLeave={() => setHover(null)}
+                  style={{ background: on ? "var(--accent-weak)" : "transparent", cursor: "pointer" }}>
+                  <td className="dl-num" style={{ ...hTd, boxShadow: on ? "inset 2px 0 0 var(--accent)" : "none" }}>{h.iteration}</td>
+                  <td className="dl-num" style={hTd}>#{h.build}</td>
+                  <td className="dl-num" style={{ ...hTd, fontWeight: 700, color: h.avg >= 85 ? "var(--good-ink)" : "var(--warn-ink)" }}>{h.avg}%</td>
+                  <td className="dl-num" style={hTd}>{h.findings}</td>
+                  <td style={{ ...hTd, textAlign: "left", color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 0, width: "100%" }}>{h.summary || "·"}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -389,28 +509,6 @@ const FindingsPanel: React.FC<{ findings: Finding[] }> = ({ findings }) => {
           </div>
         ))}
       </div>
-    </div>
-  );
-};
-
-const PlanPanel: React.FC<{ plan: PlanStep[] }> = ({ plan }) => {
-  if (plan.length === 0) return <div style={monoHint}>One agent, working solo. When the orchestrator splits the goal across specialists, each subtask appears here.</div>;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-      {plan.map((p, i) => (
-        <div key={i} className="dl-row" style={planRow}>
-          <span className="dl-num" style={stepNum}>{i + 1}</span>
-          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 12.5, lineHeight: 1.4, overflowWrap: "anywhere" }}>{p.subtask}</span>
-            {(p.agent || p.worktree) && (
-              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-                {p.agent && <Pill color="var(--accent-ink)" bg="var(--accent-weak)">{p.agent}</Pill>}
-                {p.worktree && <span style={{ ...worktreeTag, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title="isolated worktree or branch">⑂ {p.worktree}</span>}
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
     </div>
   );
 };
@@ -470,7 +568,7 @@ const ScheduleStrip: React.FC<{ schedule: ScheduleInfo }> = ({ schedule }) => {
 /* ── page ─────────────────────────────────────────────────────────── */
 
 const Page: React.FC = () => {
-  const { snap, connected, stop, reset, setEvals, setMaxLoops, setTargetAccuracy, setGoal, resolveGate, setLocked } = useFactory();
+  const { snap, connected, stop, reset, setEvals, setMaxLoops, setTargetAccuracy, setGoal, setPerCriterionTargets, setCriterionTargets, resolveGate, setLocked } = useFactory();
 
   const resumeState = (doc: unknown) => {
     fetch(`${API}/api/loopstate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(doc) })
@@ -478,7 +576,7 @@ const Page: React.FC = () => {
   };
 
   const [controlsOpen, setControlsOpen] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [maxDraft, setMaxDraft] = useState<number | null>(null);
   const [evalDraft, setEvalDraft] = useState<RubricRow[] | null>(null);
   const [goalDraft, setGoalDraft] = useState<string | null>(null);
@@ -509,18 +607,12 @@ const Page: React.FC = () => {
     const sig = snap.evalSpecs.map((e) => `${e.id}:${e.criterion}`).join("|");
     if (lastSpecSig.current !== sig || evalDraft === null) {
       lastSpecSig.current = sig;
-      setEvalDraft(snap.evalSpecs.map((e) => ({ id: e.id, criterion: e.criterion })));
+      setEvalDraft(snap.evalSpecs.map((e) => ({ id: e.id, criterion: e.criterion, target: e.target ?? -1 })));
     }
   }, [snap, maxDraft, evalDraft, goalDraft]);
 
   useEffect(() => {
     if (snap && snap.build > 0 && !autoOpened.current) { autoOpened.current = true; setSidebarOpen(true); }
-  }, [snap]);
-
-  const resultById = useMemo(() => {
-    const m: Record<string, EvalResult> = {};
-    if (snap) for (const r of snap.evals) m[r.id] = r;
-    return m;
   }, [snap]);
 
   if (!snap) {
@@ -540,8 +632,7 @@ const Page: React.FC = () => {
   const green = snap.evals.filter((e) => e.passed).length;
   const avgScore = total ? Math.round(snap.evals.reduce((a, e) => a + e.score, 0) / total) : 0;
   const allGreen = total > 0 && green === total;
-  const orchestrator = snap.outputs.find((o) => o.role === "orchestrator");
-  const subagents = snap.outputs.filter((o) => o.role === "subagent");
+  const subAgentCount = snap.outputs.filter((o) => o.role === "subagent").length;
   const openFindings = snap.findings.filter((f) => !f.addressed).length;
   const live = deriveLive(connected, snap);
 
@@ -549,7 +640,7 @@ const Page: React.FC = () => {
     if (!evalDraft) return;
     setEvals(
       evalDraft
-        .map((e) => ({ id: e.id, criterion: e.criterion, kind: e.kind ?? "llm", command: e.command ?? "" }))
+        .map((e) => ({ id: e.id, criterion: e.criterion, kind: e.kind ?? "llm", command: e.command ?? "", target: e.target ?? -1 }))
         .filter((e) => e.criterion.trim() || e.command.trim()),
     );
     setEvalDraft(null);
@@ -559,6 +650,12 @@ const Page: React.FC = () => {
     const next = [...evalDraft];
     next[i] = { ...next[i], ...patch };
     setEvalDraft(next);
+  };
+  // Drag a criterion's own target: update the draft and, if it's a saved row,
+  // push it live so the pass/fail colouring updates immediately.
+  const dragTarget = (i: number, row: RubricRow, value: number) => {
+    mutRow(i, { target: value });
+    if (row.id) setCriterionTargets({ [row.id]: value });
   };
   const removeRow = (i: number) => setEvalDraft((evalDraft ?? []).filter((_, j) => j !== i));
   const addLLM = () => setEvalDraft([...(evalDraft ?? []), { criterion: "" }]);
@@ -607,6 +704,7 @@ const Page: React.FC = () => {
           <Stat label="Build" value={`#${snap.build}`} sub={snap.build ? "latest artifact" : "nothing yet"} delay={80} />
           <Stat label="Iterations" value={`${snap.loopCount}${snap.maxLoopsEnabled ? `/${snap.maxLoops}` : ""}`} sub={snap.maxLoopsEnabled ? "cap on" : "no cap"} delay={120} />
           <Stat label="Open findings" value={openFindings} sub={`${snap.findings.length - openFindings} fixed`} accent={openFindings ? "var(--warn)" : snap.findings.length ? "var(--good)" : undefined} delay={160} />
+          <Stat label="Tokens" value={fmtTokens(snap.totalTokens)} sub={snap.totalTokens ? "across all agents" : "none yet"} delay={200} />
         </div>
 
         {/* ── gate ──────────────────────────────────────────────────── */}
@@ -647,10 +745,27 @@ const Page: React.FC = () => {
                   )}
                 </div>
                 <div>
-                  <Label>Rubric</Label>
-                  <div style={{ fontSize: 11.5, color: "var(--text-3)", margin: "2px 0 10px" }}>
-                    Add your own criteria or <b style={{ color: "var(--text-2)" }}>import a file</b> — the checker grades every build against them. <span className="dl-num">avg {avgScore}% · {green}/{total} at target</span>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <Label>Rubric</Label>
+                    <ToggleSwitch checked={snap.perCriterionTargets} onChange={setPerCriterionTargets} label="individual targets" />
                   </div>
+                  <div style={{ fontSize: 11.5, color: "var(--text-3)", margin: "2px 0 10px" }}>
+Add criteria or <b style={{ color: "var(--text-2)" }}>import a file</b>. <span className="dl-num">avg {avgScore}% · {green}/{total} at target</span>
+                  </div>
+                  {!snap.perCriterionTargets && (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 9 }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 650, color: "var(--text-2)" }}>Target accuracy · all criteria</span>
+                      <div style={scoreTrack}>
+                        <div style={{ width: `${snap.targetAccuracy}%`, height: 8, borderRadius: 999, background: "var(--accent)", opacity: 0.5 }} />
+                        <div style={{ position: "absolute", left: `${snap.targetAccuracy}%`, top: "50%", transform: "translate(-50%,-50%)", width: 11, height: 15, borderRadius: 3, background: "var(--accent)", boxShadow: "0 0 0 2px var(--surface)", pointerEvents: "none" }} />
+                        <input type="range" min={0} max={100} value={snap.targetAccuracy} aria-label="target accuracy"
+                          onChange={(e) => setTargetAccuracy(Number(e.target.value))}
+                          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", margin: 0, opacity: 0, cursor: "ew-resize" }} />
+                      </div>
+                      <span className="dl-num" style={{ fontSize: 11.5, fontWeight: 700, width: 44, textAlign: "right", color: "var(--accent-ink)" }}>≥{snap.targetAccuracy}%</span>
+                      <span style={{ width: 28, flexShrink: 0 }} aria-hidden />
+                    </div>
+                  )}
                   <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                     {(evalDraft ?? []).length === 0 && (
                       <div style={{ fontSize: 12.5, color: "var(--text-3)", padding: "10px 12px", border: "1px dashed var(--border-2)", borderRadius: "var(--r-sm)", background: "var(--surface-2)" }}>
@@ -658,9 +773,6 @@ const Page: React.FC = () => {
                       </div>
                     )}
                     {(evalDraft ?? []).map((row, i) => {
-                      const res = row.id ? resultById[row.id] : undefined;
-                      const score = res?.score ?? 0;
-                      const met = !!res?.passed;
                       const lineCount = row.criterion.split(/\r?\n/).filter((l) => l.trim()).length;
                       return (
                         <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -675,30 +787,40 @@ const Page: React.FC = () => {
                           ) : (
                             <input className="dl-input" value={row.criterion} onChange={(e) => mutRow(i, { criterion: e.target.value })} placeholder="e.g. Cites at least two real sources" style={{ ...inp, flex: 1 }} />
                           )}
-                          <div title={res?.detail} style={scoreTrack}>
-                            <div className="dl-bar" style={{ width: `${score}%`, height: 8, borderRadius: 999, background: met ? "var(--good)" : "var(--warn)", transition: "width .5s var(--ease)" }} />
-                            <div style={{ position: "absolute", left: `${snap.targetAccuracy}%`, top: -2, bottom: -2, width: 2, background: "var(--text)", borderRadius: 2 }} />
-                          </div>
-                          <span className="dl-num" style={{ fontSize: 11.5, fontWeight: 700, width: 34, textAlign: "right", color: res ? (met ? "var(--good-ink)" : "var(--warn-ink)") : "var(--text-3)" }}>{res ? `${score}%` : "·"}</span>
+                          {(() => {
+                            const pc = snap.perCriterionTargets;
+                            const effTarget = pc && (row.target ?? -1) >= 0 ? (row.target as number) : snap.targetAccuracy;
+                            return (
+                              <>
+                                <div title={pc ? `pass threshold ${effTarget}%` : `target ${effTarget}% (global)`} style={scoreTrack}>
+                                  <div style={{ width: `${effTarget}%`, height: 8, borderRadius: 999, background: "var(--accent)", opacity: pc ? 0.6 : 0.4, transition: "width .12s var(--ease)" }} />
+                                  <div style={{ position: "absolute", left: `${effTarget}%`, top: "50%", transform: "translate(-50%,-50%)", width: 11, height: 15, borderRadius: 3, background: pc ? "var(--accent)" : "var(--border-2)", boxShadow: "0 0 0 2px var(--surface)", pointerEvents: "none" }} />
+                                  {pc && (
+                                    <input type="range" min={0} max={100} value={effTarget} aria-label="pass threshold"
+                                      onChange={(e) => dragTarget(i, row, Number(e.target.value))}
+                                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", margin: 0, opacity: 0, cursor: "ew-resize" }} />
+                                  )}
+                                </div>
+                                <span className="dl-num" style={{ fontSize: 11.5, fontWeight: 700, width: 44, textAlign: "right", color: pc ? "var(--accent-ink)" : "var(--text-3)" }}>≥{effTarget}%</span>
+                              </>
+                            );
+                          })()}
                           <button className="dl-btn" onClick={() => removeRow(i)} style={xBtn} title="remove">✕</button>
                         </div>
                       );
                     })}
                   </div>
-                  <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap", alignItems: "center" }}>
                     <Btn variant="subtle" sm onClick={addLLM}>+ Criterion</Btn>
                     <input ref={rubricFileRef} type="file" accept=".txt,.md,.markdown,.csv,.json,.yaml,.yml" style={{ display: "none" }} onChange={(e) => importRubricFile(e.target.files?.[0] ?? null)} />
                     <Btn variant="ghost" sm onClick={() => rubricFileRef.current?.click()}>⭱ Import file</Btn>
+                    {snap.perCriterionTargets && (
+                      <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>Drag each bar · untouched use <b className="dl-num" style={{ color: "var(--text-2)" }}>{snap.targetAccuracy}%</b></span>
+                    )}
                   </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 28, flexWrap: "wrap", alignItems: "flex-start" }}>
-                  <div style={{ minWidth: 240, flex: 1 }}>
-                    <Label>Target accuracy <span className="dl-num" style={{ color: "var(--accent-ink)", fontWeight: 800 }}>{snap.targetAccuracy}%</span></Label>
-                    <input type="range" min={0} max={100} value={snap.targetAccuracy}
-                      onChange={(e) => setTargetAccuracy(Number(e.target.value))} style={{ width: "100%", marginTop: 10 }} />
-                    <div style={hintText}>Every criterion must reach at least this before the loop can finish.</div>
-                  </div>
                   <div style={{ minWidth: 240 }}>
                     <Label>Loop cap</Label>
                     <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
@@ -733,44 +855,20 @@ const Page: React.FC = () => {
               </div>
             </Section>
 
-            {/* ── live output ─────────────────────────────────────── */}
-            <Section icon="◍" title="Live output" delay={90}
-              desc="The orchestrator’s work as it happens. Every subagent it spawns gets its own pane."
-              right={<span className="dl-num" style={{ fontSize: 12, color: "var(--text-3)", fontWeight: 550 }}>
-                {subagents.length > 0 ? `1 + ${subagents.length} agent${subagents.length > 1 ? "s" : ""}` : "no subagents"}
-              </span>}>
-              {snap.outputs.length === 0 ? (
-                <div style={outputEmpty}>
-                  <div style={{ fontSize: 24, marginBottom: 8 }}>◍</div>
-                  <div style={{ fontWeight: 650, color: "var(--text-2)" }}>Waiting for the orchestrator</div>
-                  <div style={{ marginTop: 5, fontSize: 12.5, color: "var(--text-3)", maxWidth: 440, marginLeft: "auto", marginRight: "auto" }}>
-                    Drive this dashboard with the <code style={inlineCode}>loopr</code> tools. Your output streams here, and every subagent you spawn gets its own pane.
-                  </div>
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  {orchestrator && <OutputPane stream={orchestrator} primary />}
-                  {subagents.length > 0 && <div style={subGrid}>{subagents.map((s) => <OutputPane key={s.id} stream={s} />)}</div>}
-                </div>
-              )}
-            </Section>
 
             {/* ── loop monitor ────────────────────────────────────── */}
             <Section icon="◎" title="Loop monitor" delay={140}
               desc="How the run is doing over time: convergence, open fixes, how the work is split, and its saved history."
               right={<ScheduleStrip schedule={snap.schedule} />}>
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <MonBlock title="Iteration history" hint="Is it converging? Each pass plots its average score.">
+                <MonBlock icon="↗" title="Iteration history" hint="Is it converging? Each pass plots its average score.">
                   <HistoryPanel history={snap.history} />
                 </MonBlock>
                 <div style={monRow}>
-                  <MonBlock title="Findings" hint="What the checker flagged to fix, and what’s done.">
+                  <MonBlock icon="⚑" title="Findings" hint="What the checker flagged to fix, and what’s done.">
                     <FindingsPanel findings={snap.findings} />
                   </MonBlock>
-                  <MonBlock title="Decomposition" hint="How the goal was split across specialist agents.">
-                    <PlanPanel plan={snap.plan} />
-                  </MonBlock>
-                  <MonBlock title="Memory" hint="Every build kept. Diff any two, or save and restore the run.">
+                  <MonBlock icon="❐" title="Memory" hint="Every build kept. Diff any two, or save and restore the run.">
                     <MemoryPanel builds={snap.builds} onResume={resumeState} />
                   </MonBlock>
                 </div>
@@ -792,19 +890,25 @@ const Page: React.FC = () => {
               <div className="dl-num" style={{ fontSize: 11.5, color: "var(--text-3)", margin: "11px 0", flexShrink: 0 }}>
                 {snap.build === 0 ? "empty" : `build #${snap.build}`} · loop {snap.loopCount}{snap.maxLoopsEnabled ? `/${snap.maxLoops}` : ""}
               </div>
-              <Preview html={snap.html} fill />
+              {snap.codeChange ? <CodeArtifact change={snap.codeChange} fill /> : <Preview html={snap.html} fill theme={theme} />}
               <div style={{ marginTop: 16, flexShrink: 0 }}>
                 <div className="dl-num" style={{ fontSize: 12, fontWeight: 700, marginBottom: 9 }}>Rubric · avg {avgScore}% · {green}/{total} at target</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                   {snap.evals.map((r) => (
                     <div key={r.id} title={r.detail}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 3 }}>
-                        <span style={{ color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 250 }}>{r.label}</span>
-                        <b className="dl-num" style={{ color: r.passed ? "var(--good-ink)" : "var(--warn-ink)" }}>{r.score}%</b>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 3, gap: 8 }}>
+                        <span style={{ color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                          {r.kind === "command" && <span title="command check" style={{ color: "var(--text-3)" }}>❯ </span>}{r.label}
+                        </span>
+                        <b className="dl-num" style={{ flexShrink: 0, color: r.passed ? "var(--good-ink)" : "var(--warn-ink)" }}>
+                          {r.kind === "command" ? (r.passed ? "✓ pass" : "✗ fail") : `${r.score}%`}
+                        </b>
                       </div>
-                      <div style={scoreTrack}>
+                      {r.kind === "command" && r.command && (
+                        <div className="dl-num" style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "ui-monospace, SFMono-Regular, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{r.command}</div>
+                      )}
+                      <div style={{ position: "relative", width: "100%", height: 8, background: "var(--surface-3)", borderRadius: 999, overflow: "hidden" }}>
                         <div className="dl-bar" style={{ width: `${r.score}%`, height: 8, borderRadius: 999, background: r.passed ? "var(--good)" : "var(--warn)", transition: "width .5s var(--ease)" }} />
-                        <div style={{ position: "absolute", left: `${snap.targetAccuracy}%`, top: -2, bottom: -2, width: 2, background: "var(--text)", borderRadius: 2 }} />
                       </div>
                     </div>
                   ))}
@@ -818,6 +922,23 @@ const Page: React.FC = () => {
               )}
             </aside>
           )}
+
+          {/* ── live agents rail (the stream as a graph) ─────────────── */}
+          <aside className="dl-slide dl-rail" style={rightRail}>
+            <div style={{ display: "flex", alignItems: "center", gap: 11, flexShrink: 0 }}>
+              <span style={iconChip}>◍</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>Live agents</div>
+                <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>the stream, wired by the plan</div>
+              </div>
+              <span className="dl-num" style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 550, flexShrink: 0 }}>
+                {subAgentCount > 0 ? `1 + ${subAgentCount}` : "idle"}
+              </span>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", marginTop: 12 }}>
+              <AgentGraph outputs={snap.outputs} plan={snap.plan} />
+            </div>
+          </aside>
         </div>
 
       </div>
@@ -827,7 +948,7 @@ const Page: React.FC = () => {
 
 /* ── styles ───────────────────────────────────────────────────────── */
 
-const wrap: React.CSSProperties = { maxWidth: 1760, margin: "0 auto", padding: "18px 28px 48px" };
+const wrap: React.CSSProperties = { maxWidth: 1840, margin: "0 auto", padding: "18px 28px 48px" };
 
 const topbar: React.CSSProperties = {
   position: "sticky", top: 0, zIndex: 20,
@@ -871,7 +992,14 @@ const statValue: React.CSSProperties = { fontSize: 27, fontWeight: 750, letterSp
 const statSub: React.CSSProperties = { fontSize: 11.5, color: "var(--text-3)", marginTop: 3 };
 
 const sidebar: React.CSSProperties = {
-  ...card, order: -1, width: 560, flexShrink: 0, position: "sticky", top: 78,
+  ...card, order: -1, width: 500, flexShrink: 0, position: "sticky", top: 78,
+  height: "calc(100vh - 96px)", overflowY: "auto",
+  display: "flex", flexDirection: "column",
+};
+
+// The live-agents rail on the right: full-height, streams the graph.
+const rightRail: React.CSSProperties = {
+  ...card, width: 400, flexShrink: 0, position: "sticky", top: 78,
   height: "calc(100vh - 96px)", overflowY: "auto",
   display: "flex", flexDirection: "column",
 };
@@ -896,9 +1024,7 @@ const outputEmpty: React.CSSProperties = {
   backgroundColor: "var(--surface-2)", backgroundImage: "linear-gradient(180deg, rgba(123,107,255,.08), transparent)",
 };
 
-const outputPane: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: "var(--r)", padding: 14, backgroundColor: "var(--surface)", backgroundImage: "var(--sheen)" };
 const outputBody: React.CSSProperties = { overflowY: "auto", fontSize: 13, lineHeight: 1.55, color: "var(--text)" };
-const subGrid: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12 };
 
 const streamDot: React.CSSProperties = { width: 9, height: 9, borderRadius: 999, flexShrink: 0 };
 
@@ -908,6 +1034,18 @@ const worktreeTag: React.CSSProperties = {
   fontFamily: "ui-monospace, SFMono-Regular, monospace",
 };
 
+const prChip: React.CSSProperties = {
+  fontSize: 12, fontWeight: 700, color: "#fff", background: "var(--accent)",
+  borderRadius: "var(--r-sm)", padding: "5px 11px", textDecoration: "none",
+  display: "inline-flex", alignItems: "center", gap: 5,
+};
+const branchChip: React.CSSProperties = {
+  fontSize: 11.5, fontWeight: 650, color: "var(--text-2)", background: "var(--surface-3)",
+  border: "1px solid var(--border-2)", borderRadius: "var(--r-sm)", padding: "4px 9px",
+  fontFamily: "ui-monospace, SFMono-Regular, monospace",
+  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%",
+};
+
 const gateBanner: React.CSSProperties = {
   display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
   border: "1px solid rgba(243,191,77,.42)",
@@ -915,9 +1053,17 @@ const gateBanner: React.CSSProperties = {
   borderRadius: "var(--r-lg)", padding: "15px 17px", boxShadow: "0 16px 40px -18px rgba(243,191,77,.3)",
 };
 
-const monRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, alignItems: "start" };
-const monBlock: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: "var(--r)", padding: 16, background: "var(--surface-2)" };
-const monoHint: React.CSSProperties = { fontSize: 12, color: "var(--text-3)", lineHeight: 1.55, padding: "6px 2px" };
+const monRow: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 14 };
+const monBlock: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: "var(--r)", padding: "18px 20px", background: "var(--surface-2)" };
+const monIcon: React.CSSProperties = {
+  width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+  display: "flex", alignItems: "center", justifyContent: "center",
+  background: "var(--accent-weak)", color: "var(--accent-ink)", fontSize: 14, fontWeight: 700,
+};
+const monoHint: React.CSSProperties = {
+  fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.5, textAlign: "center",
+  padding: "20px 18px", border: "1px dashed var(--border-2)", borderRadius: "var(--r-sm)", background: "var(--surface)",
+};
 const microLabel: React.CSSProperties = { fontSize: 10, color: "var(--text-3)", fontWeight: 650, textTransform: "uppercase", letterSpacing: ".07em" };
 
 const hTable: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 11.5 };
@@ -925,8 +1071,6 @@ const hTh: React.CSSProperties = { textAlign: "center", padding: "6px 8px", colo
 const hTd: React.CSSProperties = { textAlign: "center", padding: "6px 8px", borderBottom: "1px solid var(--surface-3)" };
 
 const findingRow: React.CSSProperties = { display: "flex", gap: 9, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", padding: "9px 10px", background: "var(--surface)" };
-const planRow: React.CSSProperties = { display: "flex", gap: 9, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", padding: "9px 10px", background: "var(--surface)" };
-const stepNum: React.CSSProperties = { width: 20, height: 20, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--accent-weak)", color: "var(--accent-ink)", fontSize: 11, fontWeight: 700 };
 const buildRow: React.CSSProperties = { display: "flex", gap: 9, alignItems: "center", padding: "6px 8px", borderRadius: 7 };
 
 const critiqueList: React.CSSProperties = { margin: 0, padding: "13px 15px 13px 30px", listStyle: "disc", background: "var(--accent-weak)", border: "1px solid rgba(123,107,255,.28)", borderRadius: "var(--r-sm)", color: "var(--accent-ink)", fontSize: 12, lineHeight: 1.55 };
@@ -943,6 +1087,16 @@ const hintText: React.CSSProperties = { fontSize: 11.5, color: "var(--text-3)", 
 
 const Label: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "-.01em" }}>{children}</div>
+);
+
+const ToggleSwitch: React.FC<{ checked: boolean; onChange: (v: boolean) => void; label?: string }> = ({ checked, onChange, label }) => (
+  <span role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
+    style={{ display: "inline-flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 11.5, color: "var(--text-2)", fontWeight: 600, userSelect: "none" }}>
+    {label}
+    <span style={{ position: "relative", width: 34, height: 19, borderRadius: 999, flexShrink: 0, background: checked ? "var(--accent)" : "var(--surface-3)", border: "1px solid var(--border-2)", transition: "background .2s var(--ease)" }}>
+      <span style={{ position: "absolute", top: 1.5, left: checked ? 16 : 1.5, width: 14, height: 14, borderRadius: 999, background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,.4)", transition: "left .2s var(--ease)" }} />
+    </span>
+  </span>
 );
 
 const scoreTrack: React.CSSProperties = { position: "relative", width: 132, height: 8, background: "var(--surface-3)", borderRadius: 999, flexShrink: 0 };
