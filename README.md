@@ -15,7 +15,7 @@ If you would rather not drive it by hand, there is an autonomous mode
 (`LOOPR_MODE=api`) where the backend runs the maker and checker agents itself on
 an Anthropic API key.
 
-![The Loopr dashboard](assets/dashboard.png)
+![The Loopr dashboard](assets/dashboard-v2.png)
 
 ## What it feels like to use
 
